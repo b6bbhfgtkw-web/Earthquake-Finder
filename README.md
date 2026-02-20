@@ -54,22 +54,6 @@ No installation required.
 
 ---
 
-## Upload to GitHub (two simple methods)
 
-### Option A: Upload using the GitHub website (easy)
-GitHub supports uploading files via your browser:
-- In your repo, click **Add file → Upload files**
-- Drag and drop your files (including `index.html` and `README.md`)
-- Add a commit message and **Commit changes** [1](https://stackoverflow.com/questions/77726552/how-to-deploy-a-website-with-github-pages-from-a-folder-other-than-docs)
-
-### Option B: Push from your computer using Git (best for ongoing edits)
-GitHub documents the general flow for adding locally hosted code:
-- Initialize repo → stage files → commit → add remote → push [3](https://outlook.office365.com/owa/?ItemID=AAMkAGFkYjhmN2MxLWE1ZGItNDZmMi1iMmE4LWUxNjUyOTkwM2M0MwBGAAAAAABdJgymlNpCSo9qf0SELAKZBwBW7e1OlG%2f8S7%2bGsmXAk6%2fMAAAAHOzLAACVeSLvNjE5Sp6T9uybbQ1VAAXVkMlaAAA%3d&exvsurl=1&viewmodel=ReadMessageItem)
-
-Example commands (run inside the folder with `index.html`):
-```bash
-git init -b main
-git add .
-git commit -m "Initial commit"
 git remote add origin https://github.com/YOUR-USER/YOUR-REPO.git
 git push -u origin main
