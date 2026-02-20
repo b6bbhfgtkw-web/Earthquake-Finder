@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Earthquake Triangulation (P–S Delay)</title>
+  <style>
+    :root{
+      --bg:#0b1020; --panel:#121a33; --ink:#e8ecff; --muted:#a9b4e6;
+      --accent:#7cf1c7; --warn:#ffcc66; --bad:#ff6b6b; --good:#72dd72;
+      --grid:#27305a;
+    }
+    body{ margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--ink);}
+    header{ padding:16px 18px; border-bottom:1px solid #1e2750;}
+    header h1{ margin:0; font-size:18px; letter-spacing:.2px;}
+    header .sub{ color:var(--muted); font-size:13px; margin-top:6px; line-height:1.35;}
+    .wrap{ display:grid; grid-template-columns: 1.1fr .9fr; gap:14px; padding:14px; align-items:start;}
+    .card{ background:var(--panel); border:1px solid #1e2750; border-radius:14px; overflow:hidden; box-shadow: 0 10px 30px rgba(0,0,0,.25);}
+    .card h2{ margin:0; font-size:14px; padding:12px 14px; border-bottom:1px solid #1e2750; color:var(--muted); font-weight:600; }
+    .pad{ padding:12px 14px; }
+    .row{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    button{
+      background:#1a2452; color:var(--ink);
+      border:1px solid #2a3775; border-radius:10px;
+      padding:10px 12px; cursor:pointer; font-weight:600; font-size:13px;
+    }
+    button:hover{ border-color:#3f55c7; }
+    button:disabled{ opacity:.45; cursor:not-allowed; }
+    .pill{
+      display:inline-flex; gap:6px; align-items:center;
+      padding:8px 10px; border-radius:999px; font-size:12px;
+      border:1px solid #2a3775; color:var(--muted);
+      background: rgba(26,36,82,.5);
+    }
+    .pill b{ color:var(--ink); font-weight:700; }
+    .hint{ color:var(--muted); font-size:12px; line-height:1.35; margin-top:10px;}
+
+    /* Explicit CSS heights prevent canvas collapse across browsers */
+    canvas{ display:block; background:#070b18; }
+    #map{ width:100%; height:560px; }
+    .seisCanvas{ width:100%; height:160px; }
+
+    .grid2{ display:grid; grid-template-columns: 1fr; gap:12px; }
+    .seisGrid{ display:grid; grid-template-columns: 1fr; gap:10px; }
+    .seisWrap{ border:1px solid #1e2750; border-radius:12px; overflow:hidden; }
+    .seisHead{ display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:rgba(255,255,255,.02); border-bottom:1px solid #1e2750; font-size:12px; color:var(--muted); }
+    .seisHead span strong{ color:var(--ink); }
+    .tbl{ width:100%; border-collapse:collapse; font-size:12px; }
+    .tbl th,.tbl td{ padding:8px 6px; border-bottom:1px solid #1e2750; text-align:left; }
+    .tbl th{ color:var(--muted); font-weight:700; }
+    .ok{ color:var(--good); font-weight:700; }
+    .bad{ color:var(--bad); font-weight:700; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .small{ font-size:12px; color:var(--muted); }
+    .legend{ display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; color:var(--muted); font-size:12px;}
+    .sw{ width:12px; height:12px; border-radius:3px; display:inline-block; margin-right:6px; }
+
+    @media (max-width: 1100px){
+      .wrap{ grid-template-columns: 1fr; }
+      #map{ height:460px; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Earthquake Location from 3 Seismographs (P–S Delay Triangulation)</h1>
+  <div class="sub">
+    Workflow: (1) Click 3 station locations → (2) Generate hidden earthquake → (3) Pick P and S arrivals on each seismogram →
+    (4) Draw distance circles → (5) Triangulate epicenter.
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- LEFT: MAP -->
+  <section class="card">
+    <h2>Map</h2>
+    <canvas id="map" width="900" height="560" aria-label="Map canvas"></canvas>
+    <div class="pad">
+      <div class="row">
+        <button id="modeStation">Place Stations (3 clicks)</button>
+        <button id="clearStations">Clear Stations</button>
+        <button id="genQuake" disabled>Generate Earthquake</button>
+        <button id="drawCircles" disabled>Draw Circles</button>
+        <button id="estimate" disabled>Compute Best-Fit Epicenter</button>
+        <button id="reveal" disabled>Reveal True Epicenter</button>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <span class="pill">Vp: <b id="vpLbl">6.0</b> km/s</span>
+        <span class="pill">Vs: <b id="vsLbl">3.5</b> km/s</span>
+        <span class="pill">Scale: <b id="scaleLbl">2.0</b> km/pixel</span>
+        <span class="pill">Seismogram window: <b id="tLbl">—</b> s</span>
+      </div>
+
+      <div class="hint">
+        <b>Picking:</b> For each seismogram, click once to mark <b style="color:var(--warn)">P</b>, click again to mark <b style="color:var(--accent)">S</b>.
+        The program uses Δt = (tS − tP) to compute distance:
+        <span class="mono">d = Δt / (1/Vs − 1/Vp) = Δt · (Vp·Vs)/(Vp−Vs)</span>.
+        <br><b>Concept check:</b> Because <span class="mono">Vs &lt; Vp</span>, the S arrival occurs later, and <span class="mono">(tS−tP)</span> grows as the earthquake is farther away.
+      </div>
+
+      <div class="legend">
+        <span><span class="sw" style="background:var(--warn)"></span>P pick</span>
+        <span><span class="sw" style="background:var(--accent)"></span>S pick</span>
+        <span><span class="sw" style="background:#6aa8ff"></span>Station</span>
+        <span><span class="sw" style="background:#ff6b6b"></span>True epicenter (hidden until reveal)</span>
+        <span><span class="sw" style="background:#72dd72"></span>Best-fit estimate</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- RIGHT: SEISMOGRAMS + TABLE -->
+  <section class="card">
+    <h2>Seismograms & Calculations</h2>
+    <div class="pad grid2">
+      <div class="seisGrid" id="seisGrid"></div>
+
+      <div>
+        <div class="small" style="margin:8px 0 6px;">
+          Distances update after you pick P and S at each station.
+        </div>
+        <table class="tbl" id="table">
+          <thead>
+            <tr>
+              <th>Station</th>
+              <th class="mono">tP (s)</th>
+              <th class="mono">tS (s)</th>
+              <th class="mono">Δt (s)</th>
+              <th class="mono">d (km)</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="hint">
+          If circles don’t intersect cleanly, that’s realistic: picking uncertainty + constant-velocity assumptions.
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  // ---------- Config ----------
+  const Vp = 6.0;     // km/s
+  const Vs = 3.5;     // km/s
+  const kmPerPixel = 2.0; // map scale
+
+  const map = document.getElementById('map');
+  const mctx = map.getContext('2d');
+
+  const btnModeStation = document.getElementById('modeStation');
+  const btnClearStations = document.getElementById('clearStations');
+  const btnGen = document.getElementById('genQuake');
+  const btnCircles = document.getElementById('drawCircles');
+  const btnEstimate = document.getElementById('estimate');
+  const btnReveal = document.getElementById('reveal');
+
+  const vpLbl = document.getElementById('vpLbl');
+  const vsLbl = document.getElementById('vsLbl');
+  const scaleLbl = document.getElementById('scaleLbl');
+  const tLbl = document.getElementById('tLbl');
+
+  vpLbl.textContent = Vp.toFixed(1);
+  vsLbl.textContent = Vs.toFixed(1);
+  scaleLbl.textContent = kmPerPixel.toFixed(1);
+
+  // ---------- State ----------
+  let placingStations = true;
+  let stations = []; // {x,y, id}
+  let quake = null;  // {x,y}
+  let revealed = false;
+
+  // Seismograms
+  let seis = []; // {canvas, ctx, data[], T, picks:{p:null,s:null}, trueTP, trueTS}
+  let seisWindow = 160; // seconds displayed (dynamic)
+
+  let circlesDrawn = false;
+  let estimatePt = null;
+
+  // ---------- Utility ----------
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+  const distPx = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+  const pxToKm = (px) => px * kmPerPixel;
+  const kmToPx = (km) => km / kmPerPixel;
+
+  function drawGrid() {
+    const w = map.width, h = map.height;
+    mctx.clearRect(0,0,w,h);
+
+    // background
+    mctx.fillStyle = '#070b18';
+    mctx.fillRect(0,0,w,h);
+
+    // grid
+    mctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid').trim();
+    mctx.lineWidth = 1;
+    mctx.globalAlpha = 0.9;
+
+    const step = 50;
+    for (let x=0; x<=w; x+=step){
+      mctx.beginPath();
+      mctx.moveTo(x,0); mctx.lineTo(x,h);
+      mctx.stroke();
+    }
+    for (let y=0; y<=h; y+=step){
+      mctx.beginPath();
+      mctx.moveTo(0,y); mctx.lineTo(w,y);
+      mctx.stroke();
+    }
+    mctx.globalAlpha = 1;
+
+    // labels
+    mctx.fillStyle = 'rgba(232,236,255,.35)';
+    mctx.font = '12px ui-monospace, monospace';
+    mctx.fillText(`Scale: ${kmPerPixel.toFixed(1)} km/pixel`, 12, 20);
+  }
+
+  function drawStations() {
+    for (const s of stations){
+      mctx.fillStyle = '#6aa8ff';
+      mctx.beginPath();
+      mctx.arc(s.x, s.y, 7, 0, Math.PI*2);
+      mctx.fill();
+
+      mctx.fillStyle = 'rgba(232,236,255,.9)';
+      mctx.font = '12px ui-monospace, monospace';
+      mctx.fillText(`S${s.id}`, s.x + 10, s.y - 10);
+    }
+  }
+
+  function drawQuakeIfVisible() {
+    if (!quake) return;
+    if (!revealed) return;
+
+    mctx.fillStyle = '#ff6b6b';
+    mctx.beginPath();
+    mctx.arc(quake.x, quake.y, 7, 0, Math.PI*2);
+    mctx.fill();
+
+    mctx.strokeStyle = 'rgba(255,107,107,.8)';
+    mctx.lineWidth = 2;
+    mctx.beginPath();
+    mctx.arc(quake.x, quake.y, 16, 0, Math.PI*2);
+    mctx.stroke();
+
+    mctx.fillStyle = 'rgba(255,107,107,.95)';
+    mctx.font = '12px ui-monospace, monospace';
+    mctx.fillText('True EQ', quake.x + 10, quake.y + 18);
+  }
+
+  function drawCircles() {
+    if (!quake || stations.length !== 3) return;
+
+    for (let i=0; i<stations.length; i++){
+      const s = stations[i];
+      const dkm = computedDistanceKm(i);
+      if (!isFinite(dkm)) continue;
+
+      const r = kmToPx(dkm);
+      mctx.strokeStyle = 'rgba(124,241,199,.65)';
+      mctx.lineWidth = 2;
+      mctx.beginPath();
+      mctx.arc(s.x, s.y, r, 0, Math.PI*2);
+      mctx.stroke();
+    }
+  }
+
+  function drawEstimate() {
+    if (!estimatePt) return;
+    mctx.fillStyle = '#72dd72';
+    mctx.beginPath();
+    mctx.arc(estimatePt.x, estimatePt.y, 7, 0, Math.PI*2);
+    mctx.fill();
+
+    mctx.strokeStyle = 'rgba(114,221,114,.85)';
+    mctx.lineWidth = 2;
+    mctx.beginPath();
+    mctx.arc(estimatePt.x, estimatePt.y, 16, 0, Math.PI*2);
+    mctx.stroke();
+
+    mctx.fillStyle = 'rgba(114,221,114,.95)';
+    mctx.font = '12px ui-monospace, monospace';
+    mctx.fillText('Estimate', estimatePt.x + 10, estimatePt.y + 18);
+  }
+
+  function redrawMap() {
+    drawGrid();
+    if (circlesDrawn) drawCircles();
+    drawStations();
+    drawEstimate();
+    drawQuakeIfVisible();
+  }
+
+  function computedDistanceKm(stIndex){
+    const p = seis[stIndex]?.picks?.p;
+    const s = seis[stIndex]?.picks?.s;
+    if (p == null || s == null) return NaN;
+    const dt = s - p;
+    if (dt <= 0) return NaN;
+    // d = dt / (1/Vs - 1/Vp)
+    return dt / (1/Vs - 1/Vp);
+  }
+
+  // ---------- Seismogram generation/rendering ----------
+  function buildSeismoPanels() {
+    const grid = document.getElementById('seisGrid');
+    grid.innerHTML = '';
+    seis = [];
+
+    for (let i=0; i<3; i++){
+      const wrap = document.createElement('div');
+      wrap.className = 'seisWrap';
+
+      const head = document.createElement('div');
+      head.className = 'seisHead';
+      head.innerHTML = `<span>Station <strong>S${i+1}</strong></span>
+                        <span class="mono">click: P, then S (3rd click resets)</span>`;
+      wrap.appendChild(head);
+
+      const c = document.createElement('canvas');
+      c.className = 'seisCanvas';
+      c.width = 700; c.height = 160;
+      wrap.appendChild(c);
+      grid.appendChild(wrap);
+
+      const ctx = c.getContext('2d');
+      seis.push({
+        canvas:c, ctx,
+        data:[],
+        T:seisWindow,
+        picks:{p:null, s:null},
+        trueTP:null, trueTS:null
+      });
+
+      c.addEventListener('click', (ev) => onPick(i, ev));
+      renderSeismo(i);
+    }
+
+    updateTable();
+  }
+
+  function synthSeismogram(i, tP, tS) {
+    // Noise + a sharp-ish P packet + a larger S packet.
+    const obj = seis[i];
+    const T = obj.T;
+    const N = 1600;           // sample count
+    const dt = T/(N-1);
+    const y = new Float32Array(N);
+
+    // noise
+    for (let k=0; k<N; k++) y[k] = (Math.random()*2-1) * 0.06;
+
+    function addPacket(t0, amp, freq, decay, rise){
+      for (let k=0; k<N; k++){
+        const t = k*dt;
+        const x = t - t0;
+        if (x < 0) continue;
+        const env = (1 - Math.exp(-x/rise)) * Math.exp(-x/decay);
+        y[k] += amp * env * Math.sin(2*Math.PI*freq*x);
+      }
+    }
+
+    // P: earlier, smaller, slightly higher freq, shorter decay
+    addPacket(tP, 0.45, 6.5, 6.0, 0.5);
+
+    // S: later, bigger, lower freq, longer decay
+    addPacket(tS, 1.00, 3.2, 10.0, 0.8);
+
+    obj.data = y;
+    obj.trueTP = tP;
+    obj.trueTS = tS;
+    obj.picks = {p:null, s:null};
+  }
+
+  function renderSeismo(i) {
+    const obj = seis[i];
+    const c = obj.canvas, ctx = obj.ctx;
+    const w = c.width, h = c.height;
+
+    // background
+    ctx.fillStyle = '#070b18';
+    ctx.fillRect(0,0,w,h);
+
+    // axis baseline
+    ctx.strokeStyle = 'rgba(169,180,230,.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h/2);
+    ctx.lineTo(w, h/2);
+    ctx.stroke();
+
+    // time ticks
+    const tickStep = (obj.T <= 200) ? 20 : 50;
+    ctx.fillStyle = 'rgba(169,180,230,.45)';
+    ctx.font = '11px ui-monospace, monospace';
+    for (let t=0; t<=obj.T; t+=tickStep){
+      const xx = (t/obj.T)*w;
+      ctx.strokeStyle = 'rgba(169,180,230,.14)';
+      ctx.beginPath();
+      ctx.moveTo(xx,0); ctx.lineTo(xx,h);
+      ctx.stroke();
+      ctx.fillText(String(t), xx+2, 12);
+    }
+
+    // waveform
+    const data = obj.data;
+    if (data && data.length){
+      ctx.strokeStyle = 'rgba(232,236,255,.92)';
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      for (let k=0; k<data.length; k++){
+        const xx = (k/(data.length-1))*w;
+        const yy = h/2 - data[k]*(h*0.42);
+        if (k===0) ctx.moveTo(xx,yy);
+        else ctx.lineTo(xx,yy);
+      }
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = 'rgba(169,180,230,.6)';
+      ctx.fillText('Place 3 stations, then Generate Earthquake to create data.', 12, h/2);
+    }
+
+    // picks
+    drawPickLine(obj, ctx, w, h, obj.picks.p, '--warn');
+    drawPickLine(obj, ctx, w, h, obj.picks.s, '--accent');
+
+    // pick labels
+    if (obj.picks.p != null){
+      ctx.fillStyle = getCss('--warn');
+      ctx.fillText(`P: ${obj.picks.p.toFixed(2)}s`, 12, h-10);
+    }
+    if (obj.picks.s != null){
+      ctx.fillStyle = getCss('--accent');
+      ctx.fillText(`S: ${obj.picks.s.toFixed(2)}s`, 120, h-10);
+    }
+  }
+
+  function getCss(name){
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function drawPickLine(obj, ctx, w, h, t, cssVar){
+    if (t == null) return;
+    const xx = (t/obj.T)*w;
+    ctx.strokeStyle = getCss(cssVar);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(xx, 0);
+    ctx.lineTo(xx, h);
+    ctx.stroke();
+  }
+
+  function onPick(i, ev){
+    if (!quake) return;
+    const obj = seis[i];
+    const rect = obj.canvas.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const t = clamp((x / rect.width) * obj.T, 0, obj.T);
+
+    if (obj.picks.p == null) obj.picks.p = t;
+    else if (obj.picks.s == null) obj.picks.s = t;
+    else obj.picks = {p:null, s:null};
+
+    renderSeismo(i);
+    updateTable();
+
+    const readyAny = seis.some(o => o.picks.p != null && o.picks.s != null);
+    btnCircles.disabled = !readyAny;
+    btnEstimate.disabled = !allStationsHaveDistances();
+  }
+
+  function allStationsHaveDistances(){
+    if (stations.length !== 3) return false;
+    for (let i=0;i<3;i++) if (!isFinite(computedDistanceKm(i))) return false;
+    return true;
+  }
+
+  function updateTable(){
+    const tbody = document.querySelector('#table tbody');
+    tbody.innerHTML = '';
+
+    for (let i=0;i<3;i++){
+      const p = seis[i]?.picks?.p;
+      const s = seis[i]?.picks?.s;
+      const dt = (p!=null && s!=null) ? (s-p) : NaN;
+      const d = computedDistanceKm(i);
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mono">S${i+1}</td>
+        <td class="mono">${p!=null ? p.toFixed(2) : '—'}</td>
+        <td class="mono">${s!=null ? s.toFixed(2) : '—'}</td>
+        <td class="mono">${isFinite(dt) ? dt.toFixed(2) : '—'}</td>
+        <td class="mono">${isFinite(d) ? d.toFixed(1) : '—'}</td>
+        <td>${isFinite(d) ? '<span class="ok">OK</span>' : '<span class="bad">Pick P & S</span>'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+
+  // ---------- Earthquake generation (fixed: atomic + dynamic time window) ----------
+  function generateEarthquake() {
+    const margin = 60;
+    const q = {
+      x: margin + Math.random()*(map.width - 2*margin),
+      y: margin + Math.random()*(map.height - 2*margin)
+    };
+
+    // Compute arrivals first (no partial updates)
+    const arrivals = [];
+    let maxTS = 0;
+    for (let i=0; i<3; i++){
+      const d_km = pxToKm(distPx(stations[i], q));
+      const tP = d_km / Vp;
+      const tS = d_km / Vs;
+      arrivals.push({tP, tS});
+      if (tS > maxTS) maxTS = tS;
+    }
+
+    // Dynamic seismogram window so distant EQs still show separated P & S
+    // Add buffer and round up for nice tick marks.
+    seisWindow = Math.max(120, Math.min(420, Math.ceil((maxTS + 30)/10)*10));
+    tLbl.textContent = seisWindow.toFixed(0);
+
+    // Apply window to all seismograms
+    for (let i=0; i<3; i++) seis[i].T = seisWindow;
+
+    // Now synthesize (all 3)
+    for (let i=0; i<3; i++){
+      synthSeismogram(i, arrivals[i].tP, arrivals[i].tS);
+      renderSeismo(i);
+    }
+    updateTable();
+
+    // commit quake
+    quake = q;
+    revealed = false;
+    circlesDrawn = false;
+    estimatePt = null;
+
+    return true;
+  }
+
+  // ---------- Best-fit epicenter estimate ----------
+  function computeBestFitEpicenter() {
+    if (!allStationsHaveDistances()) return;
+    const r = [0,1,2].map(i => kmToPx(computedDistanceKm(i)));
+
+    let x = (stations[0].x + stations[1].x + stations[2].x)/3;
+    let y = (stations[0].y + stations[1].y + stations[2].y)/3;
+
+    const lr = 0.08;
+    for (let iter=0; iter<700; iter++){
+      let gx = 0, gy = 0;
+      for (let i=0;i<3;i++){
+        const dx = x - stations[i].x;
+        const dy = y - stations[i].y;
+        const di = Math.hypot(dx,dy) || 1e-6;
+        const fi = (di - r[i]);
+        gx += 2*fi*(dx/di);
+        gy += 2*fi*(dy/di);
+      }
+      x -= lr*gx;
+      y -= lr*gy;
+      x = clamp(x, 0, map.width);
+      y = clamp(y, 0, map.height);
+    }
+    estimatePt = {x, y};
+  }
+
+  // ---------- Map interaction ----------
+  function mapClick(ev) {
+    if (!placingStations) return;
+    if (stations.length >= 3) return;
+
+    const rect = map.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * (map.width / rect.width);
+    const y = (ev.clientY - rect.top) * (map.height / rect.height);
+
+    stations.push({x, y, id: stations.length+1});
+    redrawMap();
+
+    if (stations.length === 3){
+      placingStations = false;
+      btnGen.disabled = false;
+      btnModeStation.disabled = true;
+      buildSeismoPanels();
+      tLbl.textContent = '—';
+    }
+  }
+
+  // ---------- Buttons ----------
+  btnModeStation.addEventListener('click', () => resetAll(true));
+  btnClearStations.addEventListener('click', () => resetAll(true));
+
+  function resetAll(clearStations){
+    placingStations = true;
+    if (clearStations) stations = [];
+    quake = null;
+    revealed = false;
+    circlesDrawn = false;
+    estimatePt = null;
+    btnGen.disabled = stations.length !== 3;
+    btnCircles.disabled = true;
+    btnEstimate.disabled = true;
+    btnReveal.disabled = true;
+    btnModeStation.disabled = false;
+    buildSeismoPanels();
+    tLbl.textContent = '—';
+    redrawMap();
+  }
+
+  btnGen.addEventListener('click', () => {
+    if (stations.length !== 3) return;
+    generateEarthquake();
+    btnReveal.disabled = false;
+    btnCircles.disabled = true;
+    btnEstimate.disabled = true;
+    redrawMap();
+  });
+
+  btnCircles.addEventListener('click', () => {
+    circlesDrawn = true;
+    redrawMap();
+    btnEstimate.disabled = !allStationsHaveDistances();
+  });
+
+  btnEstimate.addEventListener('click', () => {
+    computeBestFitEpicenter();
+    redrawMap();
+  });
+
+  btnReveal.addEventListener('click', () => {
+    revealed = true;
+    redrawMap();
+
+    if (estimatePt && quake){
+      const errKm = pxToKm(Math.hypot(estimatePt.x - quake.x, estimatePt.y - quake.y));
+      alert(`True epicenter revealed.\n\nIf you computed an estimate:\nError ≈ ${errKm.toFixed(1)} km`);
+    } else {
+      alert('True epicenter revealed.');
+    }
+  });
+
+  // ---------- Init ----------
+  map.addEventListener('click', mapClick);
+  buildSeismoPanels();
+  redrawMap();
+})();
+</script>
+</body>
+</html>
